@@ -3,7 +3,7 @@ import json
 import requests
 from openai import OpenAI
 
-# 1. 🚨 MANDATORY VARIABLES EXACTLY AS REQUESTED BY SCALAR
+# 1. MANDATORY VARIABLES EXACTLY AS REQUESTED BY SCALAR
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY", "dummy_local_token")
 MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Llama-3-70b-chat-hf")
@@ -22,9 +22,23 @@ TASKS = [
     "task_4_targeting"
 ]
 
+# --- STRICT GRADING LOGGERS ---
+def log_start(task: str, env: str, model: str) -> None:
+    print(f"[START] task={task} env={env} model={model}", flush=True)
+
+def log_step(step: int, action: str, reward: float, done: bool, error: str = None) -> None:
+    error_val = error if error else "null"
+    done_val = str(done).lower()
+    print(f"[STEP] step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}", flush=True)
+
+def log_end(success: bool, steps: int, score: float, rewards: list) -> None:
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    success_val = str(success).lower()
+    print(f"[END] success={success_val} steps={steps} score={score:.3f} rewards={rewards_str}", flush=True)
+# ------------------------------
+
 def get_llm_action(observation_data):
     """Asks the LLM what action to take based on the ad observation."""
-    
     system_prompt = """You are an expert Meta Ad-Policy Moderator AI. 
     Evaluate the ad and output a decision. Using tools costs -0.05 points, so be efficient.
     
@@ -57,49 +71,55 @@ def get_llm_action(observation_data):
             "reasoning": result.get("reasoning", "Fallback reasoning")
         }
     except Exception as e:
-        print(f"⚠️ LLM Call Failed: {e}. Defaulting to safe fallback.")
         return {"action_type": "analyze_image", "reasoning": "Error recovery."}
 
 def main() -> None:
-    print("🚀 Starting Meta Ad-Policy Automated Inference...")
-    total_score = 0.0
-
     for task_id in TASKS:
-        print(f"\n--- 🎬 Starting Episode: {task_id} ---")
+        log_start(task=task_id, env="meta_ad_policy_sandbox", model=MODEL_NAME)
+        
+        rewards = []
+        steps_taken = 0
+        success = False
         
         try:
             res = requests.post(f"{ENV_URL}/reset", json={"task_id": task_id})
             if res.status_code != 200:
-                print(f"❌ Env connection failed. Check if Docker is running on port 8000.")
-                return
-        except requests.exceptions.ConnectionError:
-            print(f"❌ Env connection refused. Is your OpenEnv Docker container running?")
-            return
+                log_step(step=1, action="reset_failed", reward=0.0, done=True, error=f"HTTP {res.status_code}")
+                log_end(success=False, steps=0, score=0.0, rewards=[])
+                continue
+                
+            data = res.json()
+            observation = data.get("observation", data)
+            done = False
             
-        observation = res.json()
-        done = False
-        step_count = 0
-        
-        while not done and step_count < MAX_STEPS:
-            step_count += 1
-            print(f"  Step {step_count} | Status: {observation.get('status_message', 'No status')}")
+            while not done and steps_taken < MAX_STEPS:
+                steps_taken += 1
+                
+                # Get action from LLM
+                action_payload = get_llm_action(observation)
+                action_str = action_payload["action_type"]
+                
+                # Execute action
+                step_res = requests.post(f"{ENV_URL}/step", json=action_payload)
+                step_data = step_res.json()
+                
+                # Parse response perfectly
+                observation = step_data.get("observation", {})
+                done = step_data.get("done", False)
+                reward = step_data.get("reward", 0.0)
+                
+                rewards.append(reward)
+                log_step(step=steps_taken, action=action_str, reward=reward, done=done, error=None)
+                
+            # Calculate final score (Clamp between 0 and 1)
+            score = min(max(sum(rewards), 0.0), 1.0)
+            success = score > 0.0
             
-            action_payload = get_llm_action(observation)
-            print(f"  🤖 Agent Action: {action_payload['action_type'].upper()}")
-            
-            step_res = requests.post(f"{ENV_URL}/step", json=action_payload)
-            step_data = step_res.json()
-            
-            # Extract from the OpenEnv schema
-            observation = step_data.get("observation", step_data)
-            done = observation.get("done", False)
-            reward = observation.get("reward", 0.0)
-            
-            if done:
-                print(f"  ✅ Episode Finished! Final Step Reward: {reward}")
-                total_score += reward
+            log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
-    print(f"\n🎉 Evaluation Complete! Total Agent Score: {total_score} / {len(TASKS)}")
+        except Exception as e:
+            log_step(step=steps_taken+1, action="exception", reward=0.0, done=True, error=str(e).replace("\n", " "))
+            log_end(success=False, steps=steps_taken, score=0.0, rewards=rewards)
 
 if __name__ == "__main__":
     main()
