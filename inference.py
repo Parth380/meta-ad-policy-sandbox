@@ -85,7 +85,8 @@ def main() -> None:
             res = requests.post(f"{ENV_URL}/reset", json={"task_id": task_id})
             if res.status_code != 200:
                 log_step(step=1, action="reset_failed", reward=0.0, done=True, error=f"HTTP {res.status_code}")
-                log_end(success=False, steps=0, score=0.0, rewards=[])
+                # Forced score to 0.01 instead of 0.0
+                log_end(success=False, steps=0, score=0.01, rewards=[])
                 continue
                 
             data = res.json()
@@ -111,15 +112,18 @@ def main() -> None:
                 rewards.append(reward)
                 log_step(step=steps_taken, action=action_str, reward=reward, done=done, error=None)
                 
-            # Calculate final score (Clamp between 0 and 1)
-            score = min(max(sum(rewards), 0.0), 1.0)
-            success = score > 0.0
+            # --- THE FIX IS HERE ---
+            # Calculate final score and forcefully clamp it strictly between 0.01 and 0.99
+            raw_score = sum(rewards)
+            score = min(max(raw_score, 0.01), 0.99)
+            success = score > 0.01
             
             log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
         except Exception as e:
             log_step(step=steps_taken+1, action="exception", reward=0.0, done=True, error=str(e).replace("\n", " "))
-            log_end(success=False, steps=steps_taken, score=0.0, rewards=rewards)
+            # Forced score to 0.01 instead of 0.0
+            log_end(success=False, steps=steps_taken, score=0.01, rewards=rewards)
 
 if __name__ == "__main__":
     main()
