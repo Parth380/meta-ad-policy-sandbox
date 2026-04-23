@@ -1,0 +1,10 @@
+Metadata-Version: 2.4
+Name: meta-ad-policy-sandbox
+Version: 0.2.3
+Summary: Meta Ad-Policy RL Sandbox
+Requires-Dist: fastapi
+Requires-Dist: uvicorn
+Requires-Dist: pydantic
+Requires-Dist: requests
+Requires-Dist: openai
+Requires-Dist: openenv-core>=0.2.0

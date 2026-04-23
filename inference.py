@@ -6,7 +6,7 @@ from openai import OpenAI
 # 1. MANDATORY VARIABLES EXACTLY AS REQUESTED BY SCALAR
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY", "dummy_local_token")
-MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Llama-3-70b-chat-hf")
+MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Meta-Llama-3-8B-Instruct")
 
 ENV_URL = "http://localhost:8000"
 MAX_STEPS = 10
@@ -39,17 +39,28 @@ def log_end(success: bool, steps: int, score: float, rewards: list) -> None:
 
 def get_llm_action(observation_data):
     """Asks the LLM what action to take based on the ad observation."""
-    system_prompt = """You are an expert Meta Ad-Policy Moderator AI. 
-    Evaluate the ad and output a decision. Using tools costs -0.05 points, so be efficient.
-    
+    system_prompt = """You are an enterprise Ad Policy Compliance Agent.
+    You navigate a multi-system compliance workflow. Always respond with ONLY valid JSON.
+
+    REQUIRED PHASE ORDER:
+    1. query_regulations   — always first
+    2. analyze_image       — required for visual/multimodal tasks
+    3. check_advertiser_history or request_landing_page — as needed
+    4. submit_audit        — always before final decision
+    5. approve or reject   — final decision only after audit
+
     AVAILABLE ACTIONS:
+    - query_regulations
     - analyze_image
+    - check_advertiser_history
     - request_landing_page
     - request_id_verification
+    - submit_audit
     - approve
     - reject
-    
-    You MUST respond in valid JSON format containing "action_type" and "reasoning".
+
+    Response format:
+    {"action_type": "<action>", "reasoning": "<brief reason>"}
     """
 
     user_prompt = f"Current Ad Observation:\n{json.dumps(observation_data, indent=2)}\n\nWhat is your next action?"
@@ -61,17 +72,25 @@ def get_llm_action(observation_data):
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            response_format={"type": "json_object"},
+            # Removed response_format={"type": "json_object"} as HF router often rejects it
             temperature=0.1
         )
         
-        result = json.loads(response.choices[0].message.content)
+        # Clean the response in case the LLM wrapped it in markdown code blocks like ```json ... ```
+        content = response.choices[0].message.content.strip()
+        if content.startswith("```json"):
+            content = content[7:-3].strip()
+        elif content.startswith("```"):
+            content = content[3:-3].strip()
+            
+        result = json.loads(content)
         return {
-            "action_type": result.get("action_type", "analyze_image"),
+            "action_type": result.get("action_type", "query_regulations"),
             "reasoning": result.get("reasoning", "Fallback reasoning")
         }
     except Exception as e:
-        return {"action_type": "analyze_image", "reasoning": "Error recovery."}
+        print(f"\n[CRITICAL LLM ERROR]: {str(e)}\n", flush=True) # THIS WILL REVEAL THE BUG
+        return {"action_type": "query_regulations", "reasoning": f"Error recovery: {str(e)}"}
 
 def main() -> None:
     for task_id in TASKS:
@@ -82,29 +101,42 @@ def main() -> None:
         success = False
         
         try:
+            # 1. Reset the environment
             res = requests.post(f"{ENV_URL}/reset", json={"task_id": task_id})
             if res.status_code != 200:
                 log_step(step=1, action="reset_failed", reward=0.0, done=True, error=f"HTTP {res.status_code}")
-                # Forced score to 0.01 instead of 0.0
                 log_end(success=False, steps=0, score=0.01, rewards=[])
                 continue
                 
-            data = res.json()
-            observation = data.get("observation", data)
+            # 2. Initialize data from the reset
+            step_data = res.json() 
+            observation = step_data.get("observation", step_data)
             done = False
             
+            # 3. THE SINGLE LOOP (Fixed)
             while not done and steps_taken < MAX_STEPS:
                 steps_taken += 1
                 
+                # Feedback memory for the LLM
+                llm_observation = {
+                    "task_id": task_id,
+                    "last_feedback": step_data.get("status_message", "No feedback yet."),
+                    "step_count": steps_taken,
+                    "ad_details": observation 
+                }
+                
                 # Get action from LLM
-                action_payload = get_llm_action(observation)
+                action_payload = get_llm_action(llm_observation)
                 action_str = action_payload["action_type"]
+                if "Error code: 402" in action_payload.get("reasoning", ""):
+                 done = True
+                 log_step(step=steps_taken, action=action_str, reward=0.0, done=True, error="API credits depleted")
+                 break
+                # Execute action in environment
+                step_res = requests.post(f"{ENV_URL}/step", json={"action": action_payload})
+                step_data = step_res.json() 
                 
-                # Execute action
-                step_res = requests.post(f"{ENV_URL}/step", json=action_payload)
-                step_data = step_res.json()
-                
-                # Parse response perfectly
+                # Update loop variables
                 observation = step_data.get("observation", {})
                 done = step_data.get("done", False)
                 reward = step_data.get("reward", 0.0)
@@ -112,17 +144,13 @@ def main() -> None:
                 rewards.append(reward)
                 log_step(step=steps_taken, action=action_str, reward=reward, done=done, error=None)
                 
-            # --- THE FIX IS HERE ---
-            # Calculate final score and forcefully clamp it strictly between 0.01 and 0.99
+            # 4. Final Scoring (Single Log)
             raw_score = sum(rewards)
-            score = min(max(raw_score, 0.01), 0.99)
-            success = score > 0.01
-            
-            log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
+            success = raw_score > 0
+            log_end(success=success, steps=steps_taken, score=raw_score, rewards=rewards)
 
         except Exception as e:
             log_step(step=steps_taken+1, action="exception", reward=0.0, done=True, error=str(e).replace("\n", " "))
-            # Forced score to 0.01 instead of 0.0
             log_end(success=False, steps=steps_taken, score=0.01, rewards=rewards)
 
 if __name__ == "__main__":
