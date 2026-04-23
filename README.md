@@ -1,245 +1,96 @@
-````markdown
+```markdown
 # MetaGuard: Enterprise Ad-Policy RL Sandbox
 
-[![OpenEnv](https://img.shields.io/badge/OpenEnv-compatible-blue)](#)
-[![Python](https://img.shields.io/badge/Python-3.11%2B-green)](#)
-[![FastAPI](https://img.shields.io/badge/FastAPI-microservices-009688)](#)
-[![RL](https://img.shields.io/badge/Training-GRPO-orange)](#)
+![OpenEnv](https://img.shields.io/badge/OpenEnv-0.2.3-blue)
+![Python](https://img.shields.io/badge/Python-3.11%2B-green)
+![FastAPI](https://img.shields.io/badge/FastAPI-Multi--Service-009688)
+![Algorithm](https://img.shields.io/badge/RL-GRPO-orange)
 
-MetaGuard is an OpenEnv-compatible reinforcement learning environment built for enterprise policy decision-making. It simulates a realistic ad-review workflow where an agent must gather context, inspect policy constraints, validate advertiser history, log its decision trail, and take a final moderation action.
-
-The goal is not simple classification. The goal is procedural compliance under uncertainty.
+MetaGuard is a high-fidelity Reinforcement Learning (RL) environment designed for ad-policy moderation. It simulates a production-grade enterprise ecosystem where AI agents must navigate multi-step compliance workflows, coordinate across distributed microservices, and overcome adversarial multimodal "traps."
 
 ---
 
-## Why this project exists
+## 🏗️ System Architecture
 
-Most moderation demos stop at “approve” or “reject.” Real systems do not work that way.
-
-A production moderation workflow usually needs:
-- policy lookup before judgment
-- account and advertiser risk context
-- audit logging for traceability
-- support for multimodal and adversarial inputs
-- stepwise compliance with a strict operating procedure
-
-MetaGuard models that workflow as a reinforcement learning environment, so an agent is rewarded not just for the final answer, but for following the correct enterprise process.
-
----
-
-## Core idea
-
-The environment forces the agent to behave like a policy operator inside a controlled moderation stack:
-
-1. retrieve policy constraints  
-2. inspect the content  
-3. check advertiser history  
-4. write an audit log  
-5. take a terminal decision  
-
-Skipping steps, violating the sequence, or ignoring context results in penalties.
-
----
-
-## System architecture
+MetaGuard utilizes a distributed microservice architecture to mimic a production moderation stack.
 
 ```mermaid
 flowchart LR
-    A[Agent / Policy Model] -->|reset / step| B[Environment Hub]
-    B --> C[Regulatory Service]
-    B --> D[Advertiser CRM Service]
-    B --> E[Audit Service]
-    B --> F[Scenario Generator]
+    A[Agent / LLM Policy] -->|/reset, /step| B[OpenEnv Environment Server]
+    B -->|query_regulations| C[Regulatory API :8001]
+    B -->|check_history| D[CRM API :8002]
+    B -->|submit_audit| E[Audit API :8003]
     B -->|observation + reward| A
-````
-
-### Services
-
-**Environment Hub**
-Coordinates the episode lifecycle, enforces step order, applies rewards, and exposes the OpenEnv-style interface.
-
-**Regulatory Service**
-Returns policy constraints, sensitive categories, and risk rules for a given task.
-
-**Advertiser CRM Service**
-Stores advertiser history, trust level, and prior violations.
-
-**Audit Service**
-Persists the moderation trace and final decision record.
-
-**Scenario Generator**
-Creates varied tasks and adversarial edge cases so the policy does not overfit to a narrow pattern.
-
----
-
-## Action space
-
-The environment uses a structured action space designed around real moderation work.
-
-### Required workflow actions
-
-* `query_regulations` — fetch policy constraints
-* `analyze_image` — inspect visual content when the task includes media
-* `check_advertiser_history` — retrieve account risk context
-* `submit_audit` — store the decision trail before final action
-
-### Terminal actions
-
-* `approve`
-* `reject`
-
-The environment penalizes invalid ordering, skipped steps, premature terminal actions, and unsupported decisions.
-
----
-
-## Reward design
-
-Rewards reflect enterprise correctness, not just outcome guessing:
-
-* positive reward for correct terminal decision
-* positive reward for following required procedural steps
-* bonus for complete audit logging
-* penalty for skipping mandatory steps
-* penalty for invalid actions
-* penalty for inconsistent decisions
-
----
-
-## Training with GRPO
-
-MetaGuard supports policy optimization using **GRPO (Group Relative Policy Optimization)**.
-
-### Why GRPO
-
-* no separate critic model required
-* works well with relative reward comparisons
-* suited for structured decision tasks
-* integrates cleanly with environment-driven feedback
-
-### Why Unsloth
-
-* reduced VRAM usage
-* faster fine-tuning cycles
-* practical for 7B–8B models on limited hardware
-
-### Training loop
-
-1. sample tasks
-2. run policy in environment
-3. compute reward from compliance + outcome
-4. update policy with GRPO
-5. repeat across task families
-
----
-
-## Task families
-
-* **Healthcare claims** — unapproved medical claims, pharma violations
-* **Financial claims** — predatory offers, misleading returns
-* **Multimodal traps** — violations hidden in images
-* **Targeting violations** — illegal demographic targeting
-
-These scenarios test both policy understanding and procedural discipline.
-
----
-
-## What makes this different
-
-MetaGuard is not a classifier.
-
-It simulates a real moderation workflow with:
-
-* tool usage
-* stateful decision making
-* policy retrieval
-* advertiser context
-* auditability
-* adversarial task generation
-* RL-based optimization
-
----
-
-## Local setup
-
-### Install
-
-```bash
-pip install -e .
-pip install -r requirements.txt
 ```
 
-### Run services
+### Integrated Services
+* **Environment Hub (`:8000`)**: Orchestrates the episode lifecycle and enforces procedural phase gates.
+* **Regulatory API (`:8001`)**: Provides category-specific policy constraints and risk levels.
+* **Advertiser CRM (`:8002`)**: Manages advertiser trust scores and historical violation records.
+* **Audit API (`:8003`)**: Persists the "Chain of Thought" and decision logs for full traceability.
+
+---
+
+## 🧠 Methodology: GRPO + Unsloth
+
+To advance beyond simple instruction following, the system implements **Group Relative Policy Optimization (GRPO)** for fine-tuning.
+
+* **Efficiency:** Optimized via **Unsloth** to enable 8B model training on consumer-grade GPUs with significantly reduced VRAM footprint.
+* **Critic-less RL:** GRPO calculates rewards based on group relative performance, eliminating the need for a separate Reward Model/Critic.
+* **Dynamic Training:** The training loop interacts with the **live environment** directly, allowing the model to learn from real-time API feedback.
+
+---
+
+## 🚦 Procedural Action Space
+
+The environment enforces a strict Standard Operating Procedure (SOP). Failure to follow this sequence results in negative rewards and blocked terminal actions.
+
+1. **`query_regulations`**: Fetch policy constraints (Mandatory initial step).
+2. **`analyze_image`**: Inspect visual assets for policy "dog whistles" (Required for multimodal tasks).
+3. **`check_advertiser_history`**: Consult the CRM for risk context and recidivism.
+4. **`submit_audit`**: Log reasoning to the Audit API (Required before final decision).
+5. **`approve` / `reject`**: Terminal actions.
+
+---
+
+## 🚀 Deployment Guide
+
+### Local Microservice Setup
+To initialize the full enterprise stack locally:
 
 ```bash
+# 1. Install local project in editable mode
+pip install -e .
+pip install -r requirements.txt
+
+# 2. Launch background microservices
 python apps/regulatory_api.py
 python apps/crm_api.py
 python apps/audit_api.py
+
+# 3. Start the Environment Hub
 uvicorn server.app:app --host 0.0.0.0 --port 8000
 ```
 
-### Train / Inference
-
+### Running Inference
+Evaluate agent compliance across adversarial task families:
 ```bash
-python grpo_train.py
+export HF_TOKEN="your_token"
 python inference.py
 ```
 
-### Validate
+---
 
-```bash
-./validate.sh <YOUR_HF_SPACE_URL> .
-```
+## 📊 Adversarial Task Families
+The system evaluates agents on four distinct challenge categories:
+* **`task_1_healthcare`**: Detection of unapproved medical claims and pharmaceutical violations.
+* **`task_2_financial`**: Identification of predatory services and high-pressure financial tactics.
+* **`task_3_multimodal`**: Policy violations hidden within imagery that bypass standard text filters.
+* **`task_4_targeting`**: Illegal demographic targeting and age-restricted policy violations.
 
 ---
 
-## Repository structure
-
-```text
-.
-├── apps/                 # microservices
-├── server/               # environment hub
-├── src/                  # environment + logic
-├── grpo_train.py         # training
-├── inference.py          # evaluation
-├── validate.sh           # validation script
-└── README.md
-```
-
----
-
-## Implementation notes
-
-* strict step sequence enforced
-* terminal actions gated by compliance steps
-* audit logs must be structured
-* reproducibility from clean setup is required
-* Docker build must be standard and functional
-
----
-
-## Suggested demo flow
-
-1. show a complex policy case
-2. agent calls services in correct order
-3. audit log is generated
-4. final decision is made
-5. reward explains correctness
-
----
-
-## Future improvements
-
-* stronger multimodal reasoning
-* richer policy graphs
-* improved adversarial generation
-* better evaluation metrics
-* expanded agent compatibility
-
----
-
-## License
-
-Add your license here.
-
-```
+## 🛠️ Technical Design Decisions
+* **Synthetic Scenario Generation:** Utilizes a dynamic `AdGenerator` to produce unique training scenarios, ensuring generalization across diverse policy edge cases.
+* **Inference Rerouting:** The stack supports instant toggling to high-speed providers to manage API rate limits during large-scale evaluation.
 ```
