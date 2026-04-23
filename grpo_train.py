@@ -47,13 +47,14 @@ def build_dataset():
 
 # ── REWARD FUNCTION (actually calls the environment) ──────────────────────────
 
-def reward_environment(prompts, completions, task_ids, **kwargs):
+def reward_environment(prompts, completions, task_id, **kwargs):
     """
     This is the real reward — model outputs an action,
     we send it to the environment, environment returns the reward.
     """
     rewards = []
-    for completion, task_id in zip(completions, task_ids):
+    # Notice we zip with task_id (from the dataset) and use t_id inside the loop
+    for completion, t_id in zip(completions, task_id):
         try:
             # Parse model output
             content = completion.strip()
@@ -70,7 +71,7 @@ def reward_environment(prompts, completions, task_ids, **kwargs):
 
         try:
             # Fresh episode for each reward calculation
-            requests.post(f"{ENV_URL}/reset", json={"task_id": task_id})
+            requests.post(f"{ENV_URL}/reset", json={"task_id": t_id})
             
             # Run a minimal sequence: if model says query_regulations,
             # run that then check what reward it generates
