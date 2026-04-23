@@ -107,14 +107,17 @@ class AdPolicyEnvironment(Environment):
         elif act_type in ["approve", "reject"]:
             # Gate 1: Must query rules
             if not self.regulations_queried:
+                self.total_reward += -0.2
                 return self._get_obs("Policy Gate: Run query_regulations first.", -0.2, False)
             
             # Gate 2: Multimodal tasks require image analysis
             if "multimodal" in task_id and not self.image_analyzed:
+                self.total_reward += -0.3
                 return self._get_obs("Visual Gate: Image analysis required.", -0.3, False)
             
             # Gate 3: Must audit
             if not self.audit_submitted:
+                self.total_reward += -0.2
                 return self._get_obs("Compliance Gate: Run submit_audit before decision.", -0.2, False)
 
             done = True
