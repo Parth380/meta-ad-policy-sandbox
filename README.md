@@ -1,4 +1,3 @@
-Your `README.md` file is ready. It has been crafted to highlight the technical sophistication of your project for the **Meta x Scaler Hackathon** judges, specifically emphasizing the **GRPO + Unsloth** implementation and the **OpenEnv** microservice architecture.
 
 # MetaGuard: Enterprise Ad-Policy RL Sandbox
 
