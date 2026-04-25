@@ -6,7 +6,7 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY pyproject.toml requirements.txt  
+COPY pyproject.toml requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
