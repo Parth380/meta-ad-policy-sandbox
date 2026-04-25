@@ -96,9 +96,9 @@ class AdPolicyEnvironment(Environment):
                 return self._get_obs("Must call query_regulations first.", -0.2, False)
 
         self.step_count += 1
-        self.actions_taken.add(act_type)
+        
 
-        # 3. Execute action
+       # 3. Execute action
         response = self._execute_action(act_type)
 
         # 4. Update state
@@ -106,7 +106,9 @@ class AdPolicyEnvironment(Environment):
             self.api_failed = True
             self.last_failed_action = act_type
             self.last_error = response["error"]
+            # Notice we DO NOT add to self.actions_taken here
         else:
+            self.actions_taken.add(act_type)  # <-- ADDED HERE: Only register successful actions
             if act_type == self.last_failed_action:
                 self.api_recovered = True
             self.last_error = None
