@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 import uvicorn
+import random
 
 app = FastAPI(title="Advertiser CRM API")
 
@@ -38,14 +39,22 @@ ADVERTISERS = {
 
 @app.get("/advertiser/{advertiser_id}")
 def get_advertiser(advertiser_id: str):
-    if advertiser_id in ADVERTISERS:
-        return ADVERTISERS[advertiser_id]
-    return {
+    if random.random() < 0.1:
+        return {"error": "service_unavailable", "retryable": True}
+
+    data = ADVERTISERS.get(advertiser_id, {
         "name": "Unknown Advertiser",
         "prior_violations": 0,
         "account_age_days": 7,
         "summary": "New unverified advertiser. No history. Treat with caution."
-    }
+    })
+
+    risk_score = min(1.0,
+        0.15 * data["prior_violations"] +
+        0.5 * (1 / (1 + data["account_age_days"] / 30))
+    )
+
+    return {**data, "risk_score": round(risk_score, 2)}
 
 @app.get("/health")
 def health():

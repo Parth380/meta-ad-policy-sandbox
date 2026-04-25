@@ -1,7 +1,8 @@
-#audit_api
 from fastapi import FastAPI
 from pydantic import BaseModel
 import uvicorn
+import random
+import uuid 
 
 app = FastAPI(title="Compliance Audit API")
 logs = []
@@ -13,9 +14,11 @@ class AuditRecord(BaseModel):
 
 @app.post("/log")
 def log_audit(record: AuditRecord):
-    logs.append(record.dict())
-    return {"status": "success", "audit_id": f"AUD-{len(logs)}"}
-
+    if random.random() < 0.1:
+        return {"error": "service_unavailable", "retryable": True}
+    audit_id = f"AUD-{uuid.uuid4().hex[:8].upper()}"
+    logs.append({**record.dict(), "audit_id": audit_id})
+    return {"status": "logged", "audit_id": audit_id}
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "compliance-audit"}

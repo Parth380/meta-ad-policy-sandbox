@@ -69,7 +69,40 @@ class AdGenerator:
          "A bottle of standard FDA-approved daily vitamins.",
          False, 400, []),
     ]
+    CONFLICT_ADS = [
+        ("FINANCIAL", "adv_002", "Smart Investment Tools",
+         "Our platform helps you manage your portfolio with ease.",
+         "A clean dashboard showing portfolio analytics.",
+         True, 20, ["guaranteed-edge"]),
+    ]
 
+    AMBIGUOUS_ADS = [
+        ("ambiguous", "adv_004", "Feel Better Naturally",
+         "Our wellness program supports your health journey.",
+         "A person meditating in a park.",
+         True, 45, ["ships-direct"]),
+    ]
+
+    ADVERSARIAL_ADS = [
+        ("HEALTHCARE", "adv_004", "Natural Energy Boost",
+         "Feel amazing every day with our daily supplement.",
+         "Fine print reads: contains semaglutide analog, ships without Rx needed.",
+         True, 60, []),
+    ]
+
+    DEPENDENCY_TRAP_ADS = [
+        ("HEALTHCARE", "adv_003", "Wellness Support Pack",
+         "Certified vitamins to support your daily routine.",
+         "Unlabeled pill bottle with small text: contains unapproved compound.",
+         True, 400, []),
+    ]
+
+    FAILURE_RECOVERY_ADS = [
+        ("HEALTHCARE", "adv_001", "Miracle Weight Loss Patch",
+         "Lose 10kg in 2 weeks. Guaranteed results or money back.",
+         "A before/after image with extreme weight loss claims.",
+         True, 30, ["guaranteed", "no-prescription"]),
+    ]
     @staticmethod
     def generate_random_ad(task_id: str = None):
         # Task overrides
@@ -105,6 +138,31 @@ class AdGenerator:
             domain_age  = 30
             risk_kw     = []
 
+        elif task_id == "task_6_conflict":
+            category, adv_id, headline, body, vlm_desc, is_violation, domain_age, risk_kw = random.choice(
+                AdGenerator.CONFLICT_ADS
+            )
+
+        elif task_id == "task_7_ambiguous":
+            category, adv_id, headline, body, vlm_desc, is_violation, domain_age, risk_kw = random.choice(
+                AdGenerator.AMBIGUOUS_ADS
+            )
+
+        elif task_id == "task_8_adversarial":
+            category, adv_id, headline, body, vlm_desc, is_violation, domain_age, risk_kw = random.choice(
+                AdGenerator.ADVERSARIAL_ADS
+            )
+
+        elif task_id == "task_9_dependency_trap":
+            category, adv_id, headline, body, vlm_desc, is_violation, domain_age, risk_kw = random.choice(
+                AdGenerator.DEPENDENCY_TRAP_ADS
+            )
+
+        elif task_id == "task_10_failure":
+            category, adv_id, headline, body, vlm_desc, is_violation, domain_age, risk_kw = random.choice(
+                AdGenerator.FAILURE_RECOVERY_ADS
+            )
+
         else:
             scenario_type = random.choices(
                 ["obvious", "multimodal", "subtle", "safe"],
@@ -112,23 +170,23 @@ class AdGenerator:
                 k=1
             )[0]
             pool_map = {
-                "obvious":   AdGenerator.OBVIOUS_VIOLATIONS,
+                "obvious":    AdGenerator.OBVIOUS_VIOLATIONS,
                 "multimodal": AdGenerator.MULTIMODAL_TRAPS,
-                "subtle":    AdGenerator.SUBTLE_VIOLATIONS,
-                "safe":      AdGenerator.SAFE_ADS,
+                "subtle":     AdGenerator.SUBTLE_VIOLATIONS,
+                "safe":       AdGenerator.SAFE_ADS,
             }
             category, adv_id, headline, body, vlm_desc, is_violation, domain_age, risk_kw = random.choice(
                 pool_map[scenario_type]
             )
 
         # Trust score — KEY FIX: multimodal traps get HIGH trust to defeat shortcuts
-        if task_id == "task_3_multimodal":
-            trust_score = round(random.uniform(0.82, 0.97), 2)  # high trust = stealth trap
+        # task_3 + task_6: high trust = stealth trap, forces CRM check
+        if task_id in ("task_3_multimodal", "task_6_conflict"):
+            trust_score = round(random.uniform(0.82, 0.97), 2)
         elif is_violation:
             trust_score = round(random.uniform(0.10, 0.50), 2)
         else:
             trust_score = round(random.uniform(0.70, 0.99), 2)
-
         # task_4 targeting age — FIX: use "age_min" consistently
         age_min = 15 if task_id == "task_4_targeting" else random.randint(18, 55)
 
