@@ -300,7 +300,7 @@ def reward_environment(prompts, completions, task_id=None, setup_actions=None, *
 # MODEL
 # =========================
 
-USE_4BIT = not torch.cuda.is_available() or torch.cuda.get_device_properties(0).total_mem < 40 * 1024**3
+USE_4BIT = not torch.cuda.is_available() or torch.cuda.get_device_properties(0).total_memory < 40 * 1024**3
 
 model, tokenizer = FastLanguageModel.from_pretrained(
     model_name="unsloth/Llama-3.1-8B-Instruct",
