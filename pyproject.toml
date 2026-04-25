@@ -6,14 +6,31 @@ build-backend = "setuptools.build_meta"
 name = "meta-ad-policy-sandbox"
 version = "0.2.3"
 description = "Meta Ad-Policy RL Sandbox"
+requires-python = ">=3.9"
 dependencies = [
     "fastapi",
     "uvicorn",
     "pydantic",
     "requests",
     "openai",
-    "openenv-core>=0.2.0"
+    "openenv-core>=0.2.0",
+]
+
+[project.optional-dependencies]
+train = [
+    "torch",
+    "datasets",
+    "trl",
+    "unsloth",
+    "accelerate",
+    "bitsandbytes",
+    "peft",
 ]
 
 [project.scripts]
 server = "server.app:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["server*", "src*"]
+exclude = ["apps*", "tests*"]

@@ -98,95 +98,167 @@ def extract_json(text):
 # =========================
 
 BASE_SCENARIOS = [
-    # 🔹 Fresh state
+    # Phase 1 — Fresh state, expected: query_regulations
     {
         "task_id": "task_1_healthcare",
-        "text": "Ad: miracle supplement cures disease. Initial review.",
-        "setup_actions": []
+        "text": "Healthcare ad: 'miracle supplement cures disease'. No actions taken yet.",
+        "actions_already_taken": [],
+        "setup_actions": [],
     },
-
-    # 🔹 Mid state
-    {
-        "task_id": "task_1_healthcare",
-        "text": "Ad: pharma product. Policy already checked. Next step?",
-        "setup_actions": [
-            {"action_type": "query_regulations", "reasoning": "step1"}
-        ]
-    },
-
-    # 🔹 Late state
     {
         "task_id": "task_2_financial",
-        "text": "Ad: investment scheme. Policy + history checked. Final decision?",
+        "text": "Financial ad: 'guaranteed 500% returns, zero risk'. No actions taken yet.",
+        "actions_already_taken": [],
+        "setup_actions": [],
+    },
+    {
+        "task_id": "task_3_multimodal",
+        "text": "Multimodal ad: image may contain hidden violation. No actions taken yet.",
+        "actions_already_taken": [],
+        "setup_actions": [],
+    },
+
+    # Phase 2 — Policy checked, expected: analyze_image OR check_advertiser_history
+    {
+        "task_id": "task_1_healthcare",
+        "text": "Healthcare ad: pharma product. Policy already queried.",
+        "actions_already_taken": ["query_regulations"],
         "setup_actions": [
-            {"action_type": "query_regulations", "reasoning": "step1"},
-            {"action_type": "check_advertiser_history", "reasoning": "step2"}
-        ]
-    }
+            {"action_type": "query_regulations", "reasoning": "policy lookup"},
+        ],
+    },
+    {
+        "task_id": "task_3_multimodal",
+        "text": "Multimodal ad: image not yet inspected. Policy already queried.",
+        "actions_already_taken": ["query_regulations"],
+        "setup_actions": [
+            {"action_type": "query_regulations", "reasoning": "policy lookup"},
+        ],
+    },
+
+    # Phase 3 — Policy + history checked, expected: submit_audit
+    {
+        "task_id": "task_2_financial",
+        "text": "Financial ad: investment scheme. Policy and advertiser history both checked.",
+        "actions_already_taken": ["query_regulations", "check_advertiser_history"],
+        "setup_actions": [
+            {"action_type": "query_regulations", "reasoning": "policy lookup"},
+            {"action_type": "check_advertiser_history", "reasoning": "trust score"},
+        ],
+    },
+
+    # Phase 4 — Audit complete, expected: reject (high-risk) or approve (clean)
+    {
+        "task_id": "task_2_financial",
+        "text": "Financial ad: investment scheme. Policy, history, and audit all complete. Make final decision.",
+        "actions_already_taken": ["query_regulations", "check_advertiser_history", "submit_audit"],
+        "setup_actions": [
+            {"action_type": "query_regulations", "reasoning": "policy lookup"},
+            {"action_type": "check_advertiser_history", "reasoning": "trust score"},
+            {"action_type": "submit_audit", "reasoning": "audit log"},
+        ],
+    },
 ]
+
+PROMPT_TEMPLATE = """You are an enterprise Ad Policy Compliance Agent.
+
+You MUST choose exactly ONE action_type from this list (any other value is invalid):
+- query_regulations
+- analyze_image
+- check_advertiser_history
+- submit_audit
+- approve
+- reject
+
+REQUIRED PHASE ORDER:
+1. query_regulations  -> always first
+2. analyze_image / check_advertiser_history  -> gather signals
+3. submit_audit  -> always before final decision
+4. approve OR reject  -> only after audit
+
+HARD RULES:
+- NEVER repeat an action listed in `actions_already_taken`.
+- Respond with ONLY a valid JSON object. No markdown, no prose.
+
+Required format:
+{{"action_type": "<one_of_the_actions_above>", "reasoning": "<short reason>"}}
+
+Scenario: {text}
+actions_already_taken: {actions_already_taken}
+
+Your next action?"""
+
 
 def build_dataset():
     rows = []
-
     for s in BASE_SCENARIOS:
-        prompt = f"""
-You are an Ad Policy Agent.
-
-Respond ONLY JSON:
-{{"action_type": "...", "reasoning": "..."}}
-
-{s['text']}
-Next action?
-"""
+        prompt = PROMPT_TEMPLATE.format(
+            text=s["text"],
+            actions_already_taken=json.dumps(s["actions_already_taken"]),
+        )
         rows.append({
             "prompt": prompt,
             "task_id": s["task_id"],
-            "setup_actions": s["setup_actions"]
+            "setup_actions": s["setup_actions"],
         })
-
-    return Dataset.from_list(rows * 20)  # small repeat
+    return Dataset.from_list(rows * 10)  # 7 scenarios x 10 = 70 examples
 
 # =========================
 # REWARD FUNCTION (FIXED)
 # =========================
 
 def reward_environment(prompts, completions, task_id=None, setup_actions=None, **kwargs):
-    client = EnvClient(ENV_URL)
+    """Shaped reward for GRPO.
 
+    Pure env reward is too sparse (mostly -0.05) to give clear gradients.
+    We add explicit shaping:
+      - invalid JSON / invalid action_type -> -1.0  (strong negative signal)
+      - valid action env REJECTS (wrong phase / API failure) -> -0.5
+      - valid action env ACCEPTS (advances state) -> +0.5 + env_reward
+      - terminal correct decision -> env_reward already contains +1.0 bonus
+    """
+    client = EnvClient(ENV_URL)
     rewards = []
 
     for completion, t_id, setup in zip(completions, task_id, setup_actions):
-        
         parsed = extract_json(completion)
-
         if not parsed:
             rewards.append(-1.0)
             continue
 
         action_type = parsed.get("action_type")
-
         if action_type not in ALLOWED_ACTIONS:
             rewards.append(-1.0)
             continue
 
         action = {
             "action_type": action_type,
-            "reasoning": parsed.get("reasoning", "")
+            "reasoning": parsed.get("reasoning", "format-compliant"),
         }
 
         try:
             client.reset(t_id)
-
-            # 🔥 FAST-FORWARD STATE
             for s in setup:
                 safe_step(client, s)
 
             result = safe_step(client, action)
+            env_reward = float(result.get("reward", -0.2))
+            status_msg = (result.get("status_message") or "").lower()
 
-            reward = float(result.get("reward", -0.2))
-            rewards.append(reward)
+            rejected = (
+                "api failure" in status_msg
+                or "invalid action" in status_msg
+                or "must call" in status_msg
+            )
 
-        except:
+            if rejected:
+                shaped = -0.5
+            else:
+                shaped = 0.5 + env_reward
+
+            rewards.append(shaped)
+
+        except Exception:
             rewards.append(-0.3)
 
     return rewards
@@ -204,9 +276,15 @@ model, tokenizer = FastLanguageModel.from_pretrained(
 model = FastLanguageModel.get_peft_model(
     model,
     r=16,
-    target_modules=["q_proj", "v_proj"],
-    lora_alpha=16,
+    target_modules=[
+        "q_proj", "k_proj", "v_proj", "o_proj",
+        "gate_proj", "up_proj", "down_proj",
+    ],
+    lora_alpha=32,
     lora_dropout=0,
+    bias="none",
+    use_gradient_checkpointing="unsloth",
+    random_state=3407,
 )
 
 # =========================

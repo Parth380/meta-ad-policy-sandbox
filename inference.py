@@ -8,7 +8,7 @@ API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY", "dummy_local_token")
 MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Meta-Llama-3-8B-Instruct")
 
-ENV_URL = "http://localhost:8000"
+ENV_URL = os.getenv("ENV_URL", "http://localhost:8000")
 MAX_STEPS = 10
 
 # 2. MANDATORY: Use OpenAI Client pointed at the HF Router
@@ -59,6 +59,12 @@ def get_llm_action(observation_data):
     - approve
     - reject
 
+    HARD RULES:
+    - NEVER repeat an action listed in `actions_already_taken`.
+    - You MUST progress through the phase order. Do NOT call submit_audit or approve/reject
+      before the prerequisite phases are complete.
+    - Choose your action_type ONLY from the AVAILABLE ACTIONS list above. Any other value is invalid.
+
     Response format:
     {"action_type": "<action>", "reasoning": "<brief reason>"}
     """
@@ -99,7 +105,8 @@ def main() -> None:
         rewards = []
         steps_taken = 0
         success = False
-        
+        actions_taken_list: list = []
+
         try:
             # 1. Reset the environment
             res = requests.post(f"{ENV_URL}/reset", json={"task_id": task_id})
@@ -122,16 +129,17 @@ def main() -> None:
                     "task_id": task_id,
                     "last_feedback": step_data.get("status_message", "No feedback yet."),
                     "step_count": steps_taken,
-                    "ad_details": observation 
+                    "actions_already_taken": actions_taken_list,
+                    "ad_details": observation
                 }
                 
                 # Get action from LLM
                 action_payload = get_llm_action(llm_observation)
                 action_str = action_payload["action_type"]
                 if "Error code: 402" in action_payload.get("reasoning", ""):
-                 done = True
-                 log_step(step=steps_taken, action=action_str, reward=0.0, done=True, error="API credits depleted")
-                 break
+                    done = True
+                    log_step(step=steps_taken, action=action_str, reward=0.0, done=True, error="API credits depleted")
+                    break
                 # Execute action in environment
                 step_res = requests.post(f"{ENV_URL}/step", json={"action": action_payload})
                 step_data = step_res.json() 
@@ -140,8 +148,21 @@ def main() -> None:
                 observation = step_data.get("observation", {})
                 done = step_data.get("done", False)
                 reward = step_data.get("reward", 0.0)
-                
+
                 rewards.append(reward)
+
+                # Track only actions that actually advanced state. Skip API-failure
+                # / invalid-action / wrong-order cases so the agent is free to retry.
+                status_msg = (step_data.get("status_message") or "").lower()
+                action_failed = (
+                    "api failure" in status_msg
+                    or "retryable" in status_msg
+                    or "invalid action" in status_msg
+                    or "must call" in status_msg
+                )
+                if not action_failed and action_str not in actions_taken_list:
+                    actions_taken_list.append(action_str)
+
                 log_step(step=steps_taken, action=action_str, reward=reward, done=done, error=None)
                 
             # 4. Final Scoring (Single Log)

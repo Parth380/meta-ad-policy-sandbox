@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+build/
+dist/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Project-specific
+outputs/
+AD_sandbox.zip
+*.log
+debug-*.log
+checkpoint-*/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Cached models / datasets
+.cache/
+hf_cache/
