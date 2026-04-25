@@ -1,152 +1,250 @@
+# grpo_train.py
+
+import os
+import time
 import json
-import torch
+import random
 import requests
+import torch
+
 from datasets import Dataset
 from unsloth import FastLanguageModel, PatchFastRL
 from trl import GRPOTrainer, GRPOConfig
 
-# MUST be called before trainer instantiation
+# 🔥 MUST come before trainer
 PatchFastRL("GRPO", FastLanguageModel)
 
-ENV_URL = "http://localhost:8000"
-TASKS = ["task_1_healthcare", "task_2_financial",
-         "task_3_multimodal", "task_4_targeting"]
+# =========================
+# CONFIG
+# =========================
 
-SYSTEM_PROMPT = """You are an enterprise Ad Policy Compliance Agent.
-Always respond with ONLY valid JSON, no markdown.
+ENV_URL = os.getenv("ENV_URL", "http://localhost:8000")
 
-REQUIRED PHASE ORDER:
-1. query_regulations  — always first
-2. analyze_image      — required for multimodal tasks  
-3. submit_audit       — always before final decision
-4. approve or reject  — only after audit
+ALLOWED_ACTIONS = [
+    "query_regulations",
+    "analyze_image",
+    "check_advertiser_history",
+    "submit_audit",
+    "approve",
+    "reject"
+]
 
-Format: {"action_type": "<action>", "reasoning": "<reason>"}"""
+# =========================
+# HEALTH CHECK
+# =========================
 
-# ── DATASET ───────────────────────────────────────────────────────────────────
+def ensure_env_ready():
+    for _ in range(20):
+        try:
+            r = requests.post(
+                f"{ENV_URL}/reset",
+                json={"task_id": "task_1_healthcare"},
+                timeout=5
+            )
+            if r.status_code == 200:
+                print("✅ Environment ready")
+                return
+        except:
+            pass
+        time.sleep(1)
+    raise RuntimeError("❌ ENV not reachable")
+
+# =========================
+# SAFE CLIENT
+# =========================
+
+class EnvClient:
+    def __init__(self, url):
+        self.url = url
+
+    def reset(self, task_id):
+        return requests.post(
+            f"{self.url}/reset",
+            json={"task_id": task_id},
+            timeout=8
+        ).json()
+
+    def step(self, action):
+        return requests.post(
+            f"{self.url}/step",
+            json={"action": action},
+            timeout=8
+        ).json()
+
+def safe_step(client, action):
+    for _ in range(3):
+        try:
+            return client.step(action)
+        except:
+            time.sleep(0.5)
+    return {"reward": -0.3}
+
+# =========================
+# JSON PARSER
+# =========================
+
+def extract_json(text):
+    try:
+        if "```" in text:
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+        return json.loads(text.strip())
+    except:
+        return None
+
+# =========================
+# DATASET (WITH SETUP ACTIONS)
+# =========================
+
+BASE_SCENARIOS = [
+    # 🔹 Fresh state
+    {
+        "task_id": "task_1_healthcare",
+        "text": "Ad: miracle supplement cures disease. Initial review.",
+        "setup_actions": []
+    },
+
+    # 🔹 Mid state
+    {
+        "task_id": "task_1_healthcare",
+        "text": "Ad: pharma product. Policy already checked. Next step?",
+        "setup_actions": [
+            {"action_type": "query_regulations", "reasoning": "step1"}
+        ]
+    },
+
+    # 🔹 Late state
+    {
+        "task_id": "task_2_financial",
+        "text": "Ad: investment scheme. Policy + history checked. Final decision?",
+        "setup_actions": [
+            {"action_type": "query_regulations", "reasoning": "step1"},
+            {"action_type": "check_advertiser_history", "reasoning": "step2"}
+        ]
+    }
+]
 
 def build_dataset():
     rows = []
-    for task_id in TASKS:
-        res = requests.post(f"{ENV_URL}/reset", json={"task_id": task_id})
-        obs = res.json()
-        prompt = (
-            f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n"
-            f"{SYSTEM_PROMPT}<|eot_id|>"
-            f"<|start_header_id|>user<|end_header_id|>\n"
-            f"Task: {task_id}\n"
-            f"Ad: {obs.get('headline','N/A')} — {obs.get('body_text','N/A')}\n"
-            f"Trust Score: {obs.get('advertiser_trust_score','N/A')}\n"
-            f"Status: {obs.get('status_message','')}\n"
-            f"What is your next action?"
-            f"<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n"
-        )
-        rows.append({"prompt": prompt, "task_id": task_id})
-    # 25x repetition = 100 rows, enough for 1 epoch
-    return Dataset.from_list(rows * 25)
 
-# ── REWARD FUNCTION (actually calls the environment) ──────────────────────────
+    for s in BASE_SCENARIOS:
+        prompt = f"""
+You are an Ad Policy Agent.
 
-def reward_environment(prompts, completions, task_id, **kwargs):
-    """
-    This is the real reward — model outputs an action,
-    we send it to the environment, environment returns the reward.
-    """
+Respond ONLY JSON:
+{{"action_type": "...", "reasoning": "..."}}
+
+{s['text']}
+Next action?
+"""
+        rows.append({
+            "prompt": prompt,
+            "task_id": s["task_id"],
+            "setup_actions": s["setup_actions"]
+        })
+
+    return Dataset.from_list(rows * 20)  # small repeat
+
+# =========================
+# REWARD FUNCTION (FIXED)
+# =========================
+
+def reward_environment(prompts, completions, task_id=None, setup_actions=None, **kwargs):
+    client = EnvClient(ENV_URL)
+
     rewards = []
-    # Notice we zip with task_id (from the dataset) and use t_id inside the loop
-    for completion, t_id in zip(completions, task_id):
-        try:
-            # Parse model output
-            content = completion.strip()
-            if content.startswith("```"):
-                content = content.split("```")[1]
-                if content.startswith("json"):
-                    content = content[4:]
-            action = json.loads(content.strip())
-            action_type = action.get("action_type", "query_regulations")
-        except Exception:
-            # Malformed JSON = penalty
-            rewards.append(-0.5)
+
+    for completion, t_id, setup in zip(completions, task_id, setup_actions):
+        
+        parsed = extract_json(completion)
+
+        if not parsed:
+            rewards.append(-1.0)
             continue
 
+        action_type = parsed.get("action_type")
+
+        if action_type not in ALLOWED_ACTIONS:
+            rewards.append(-1.0)
+            continue
+
+        action = {
+            "action_type": action_type,
+            "reasoning": parsed.get("reasoning", "")
+        }
+
         try:
-            # Fresh episode for each reward calculation
-            requests.post(f"{ENV_URL}/reset", json={"task_id": t_id})
-            
-            # Run a minimal sequence: if model says query_regulations,
-            # run that then check what reward it generates
-            step_res = requests.post(
-                f"{ENV_URL}/step",
-                json={"action": {"action_type": action_type, 
-                                 "reasoning": action.get("reasoning", "")}},
-                timeout=5
-            )
-            data = step_res.json()
-            rewards.append(float(data.get("reward", -0.1)))
-        except Exception:
-            rewards.append(-0.1)
+            client.reset(t_id)
+
+            # 🔥 FAST-FORWARD STATE
+            for s in setup:
+                safe_step(client, s)
+
+            result = safe_step(client, action)
+
+            reward = float(result.get("reward", -0.2))
+            rewards.append(reward)
+
+        except:
+            rewards.append(-0.3)
 
     return rewards
 
-def reward_json_format(prompts, completions, **kwargs):
-    """Bonus reward for valid JSON output."""
-    rewards = []
-    for completion in completions:
-        try:
-            content = completion.strip()
-            if content.startswith("```"):
-                content = content.split("```")[1]
-                if content.startswith("json"):
-                    content = content[4:]
-            json.loads(content.strip())
-            rewards.append(0.5)
-        except Exception:
-            rewards.append(-0.5)
-    return rewards
-
-# ── MODEL SETUP ───────────────────────────────────────────────────────────────
+# =========================
+# MODEL
+# =========================
 
 model, tokenizer = FastLanguageModel.from_pretrained(
     model_name="unsloth/Llama-3.1-8B-Instruct",
-    max_seq_length=1024,
     load_in_4bit=True,
+    max_seq_length=1024,
 )
+
 model = FastLanguageModel.get_peft_model(
     model,
     r=16,
     target_modules=["q_proj", "v_proj"],
     lora_alpha=16,
-    lora_dropout=0.0,
-    use_gradient_checkpointing="unsloth",
+    lora_dropout=0,
 )
 
-# ── TRAINER ───────────────────────────────────────────────────────────────────
+# =========================
+# TRAINER
+# =========================
 
 dataset = build_dataset()
 
 trainer = GRPOTrainer(
     model=model,
-    reward_funcs=[reward_environment, reward_json_format],
+    reward_funcs=[reward_environment],
     args=GRPOConfig(
-        output_dir="outputs/meta-ad-agent",
+        output_dir="outputs",
         learning_rate=5e-6,
         num_train_epochs=1,
-        per_device_train_batch_size=2,
-        gradient_accumulation_steps=4,
+        per_device_train_batch_size=1,
+        gradient_accumulation_steps=2,
+        num_generations=2,
         max_prompt_length=512,
-        max_completion_length=128,
-        num_generations=4,          # lower = faster, enough for demo
-        logging_steps=5,
-        save_steps=50,
-        report_to="none",
+        max_completion_length=64,
+        logging_steps=2,
+        report_to="none"
     ),
     train_dataset=dataset,
-    tokenizer=tokenizer,
+    tokenizer=tokenizer
 )
 
+# =========================
+# RUN
+# =========================
+
 if __name__ == "__main__":
-    print("Starting GRPO training — environment must be running on :8000")
+    ensure_env_ready()
+
+    print("🚀 Starting training...")
     trainer.train()
-    model.save_pretrained("outputs/meta-ad-agent-final")
-    tokenizer.save_pretrained("outputs/meta-ad-agent-final")
-    print("Done. Model saved to outputs/meta-ad-agent-final")
+
+    model.save_pretrained("outputs/final")
+    tokenizer.save_pretrained("outputs/final")
+
+    print("✅ Done")
