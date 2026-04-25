@@ -11,7 +11,6 @@ from datasets import Dataset
 from unsloth import FastLanguageModel, PatchFastRL
 from trl import GRPOTrainer, GRPOConfig
 
-# 🔥 MUST come before trainer
 PatchFastRL("GRPO", FastLanguageModel)
 
 # =========================
@@ -19,14 +18,18 @@ PatchFastRL("GRPO", FastLanguageModel)
 # =========================
 
 ENV_URL = os.getenv("ENV_URL", "http://localhost:8000")
+HF_TOKEN = os.getenv("HF_TOKEN", "")
+HF_REPO = os.getenv("HF_REPO", "")  # e.g. "yourname/metaguard-llama3.1-8b-grpo"
 
 ALLOWED_ACTIONS = [
     "query_regulations",
     "analyze_image",
     "check_advertiser_history",
+    "request_landing_page",
+    "request_id_verification",
     "submit_audit",
     "approve",
-    "reject"
+    "reject",
 ]
 
 # =========================
@@ -158,6 +161,34 @@ BASE_SCENARIOS = [
             {"action_type": "submit_audit", "reasoning": "audit log"},
         ],
     },
+
+    # Targeting task — fresh state, expected: query_regulations
+    {
+        "task_id": "task_4_targeting",
+        "text": "Financial ad targeting young users: 'Start Your First Investment Portfolio'. No actions taken yet.",
+        "actions_already_taken": [],
+        "setup_actions": [],
+    },
+    # Targeting task — mid state, expected: request_id_verification (age check)
+    {
+        "task_id": "task_4_targeting",
+        "text": "Financial ad targeting young users. Policy queried, need to verify age targeting.",
+        "actions_already_taken": ["query_regulations"],
+        "setup_actions": [
+            {"action_type": "query_regulations", "reasoning": "policy lookup"},
+        ],
+    },
+    # Targeting task — audit ready
+    {
+        "task_id": "task_4_targeting",
+        "text": "Financial ad targeting minors. Policy, advertiser history, and ID verification done. Submit audit.",
+        "actions_already_taken": ["query_regulations", "check_advertiser_history", "request_id_verification"],
+        "setup_actions": [
+            {"action_type": "query_regulations", "reasoning": "policy lookup"},
+            {"action_type": "check_advertiser_history", "reasoning": "trust score"},
+            {"action_type": "request_id_verification", "reasoning": "age check"},
+        ],
+    },
 ]
 
 PROMPT_TEMPLATE = """You are an enterprise Ad Policy Compliance Agent.
@@ -166,6 +197,8 @@ You MUST choose exactly ONE action_type from this list (any other value is inval
 - query_regulations
 - analyze_image
 - check_advertiser_history
+- request_landing_page
+- request_id_verification
 - submit_audit
 - approve
 - reject
@@ -201,7 +234,7 @@ def build_dataset():
             "task_id": s["task_id"],
             "setup_actions": s["setup_actions"],
         })
-    return Dataset.from_list(rows * 10)  # 7 scenarios x 10 = 70 examples
+    return Dataset.from_list(rows * 10)  # 10 scenarios x 10 = 100 examples
 
 # =========================
 # REWARD FUNCTION (FIXED)
@@ -267,20 +300,23 @@ def reward_environment(prompts, completions, task_id=None, setup_actions=None, *
 # MODEL
 # =========================
 
+USE_4BIT = not torch.cuda.is_available() or torch.cuda.get_device_properties(0).total_mem < 40 * 1024**3
+
 model, tokenizer = FastLanguageModel.from_pretrained(
     model_name="unsloth/Llama-3.1-8B-Instruct",
-    load_in_4bit=True,
-    max_seq_length=1024,
+    load_in_4bit=USE_4BIT,
+    max_seq_length=2048,
+    dtype=None,  # auto-detect bf16 on A100
 )
 
 model = FastLanguageModel.get_peft_model(
     model,
-    r=16,
+    r=32,
     target_modules=[
         "q_proj", "k_proj", "v_proj", "o_proj",
         "gate_proj", "up_proj", "down_proj",
     ],
-    lora_alpha=32,
+    lora_alpha=64,
     lora_dropout=0,
     bias="none",
     use_gradient_checkpointing="unsloth",
@@ -298,18 +334,20 @@ trainer = GRPOTrainer(
     reward_funcs=[reward_environment],
     args=GRPOConfig(
         output_dir="outputs",
-        learning_rate=5e-6,
-        num_train_epochs=1,
-        per_device_train_batch_size=1,
-        gradient_accumulation_steps=2,
-        num_generations=2,
-        max_prompt_length=512,
-        max_completion_length=64,
-        logging_steps=2,
-        report_to="none"
+        learning_rate=2e-5,
+        num_train_epochs=3,
+        per_device_train_batch_size=2,
+        gradient_accumulation_steps=4,
+        num_generations=4,
+        max_prompt_length=768,
+        max_completion_length=128,
+        logging_steps=5,
+        warmup_ratio=0.1,
+        bf16=True,
+        report_to="none",
     ),
     train_dataset=dataset,
-    tokenizer=tokenizer
+    tokenizer=tokenizer,
 )
 
 # =========================
@@ -319,10 +357,36 @@ trainer = GRPOTrainer(
 if __name__ == "__main__":
     ensure_env_ready()
 
-    print("🚀 Starting training...")
+    print("Starting GRPO training...")
     trainer.train()
 
-    model.save_pretrained("outputs/final")
-    tokenizer.save_pretrained("outputs/final")
+    model.save_pretrained("outputs/lora_adapter")
+    tokenizer.save_pretrained("outputs/lora_adapter")
+    print("LoRA adapter saved to outputs/lora_adapter")
 
-    print("✅ Done")
+    print("Merging adapter into base model (bf16)...")
+    merged_model, merged_tokenizer = FastLanguageModel.from_pretrained(
+        model_name="outputs/lora_adapter",
+        load_in_4bit=False,
+        max_seq_length=2048,
+    )
+    merged_model.save_pretrained_merged(
+        "outputs/merged",
+        merged_tokenizer,
+        save_method="merged_16bit",
+    )
+    print("Merged model saved to outputs/merged")
+
+    if HF_REPO:
+        print(f"Pushing merged model to {HF_REPO}...")
+        merged_model.push_to_hub_merged(
+            HF_REPO,
+            merged_tokenizer,
+            save_method="merged_16bit",
+            token=HF_TOKEN,
+        )
+        print(f"Model live at https://huggingface.co/{HF_REPO}")
+    else:
+        print("Set HF_REPO env var to auto-push to Hub (skipped).")
+
+    print("Done.")
