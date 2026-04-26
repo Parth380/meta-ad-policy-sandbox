@@ -1,4 +1,4 @@
-# MetaGuard: A Multi-App RL Environment for Enterprise Ad Policy Compliance
+# MetaGuard: A Multi-App RL Environment for  Ad Policy Compliance
 
 > An OpenEnv-compatible reinforcement learning environment that forces an LLM agent
 > to do **real investigative work** across multiple enterprise APIs — not pattern-match.
@@ -6,6 +6,19 @@
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-blue.svg)
 ![Framework: OpenEnv + GRPO](https://img.shields.io/badge/Framework-OpenEnv%20%2B%20GRPO-success.svg)
+
+---
+
+## Quick links
+
+| Asset | URL |
+| --- | --- |
+| **Hugging Face Space** (environment — MetaGuard) | [huggingface.co/spaces/parth-1/MetaGuard](https://huggingface.co/spaces/parth-1/MetaGuard) |
+| **Hugging Face Space** (GRPO training — MetaGuard-Train) | [huggingface.co/spaces/parth-1/MetaGuard-Train](https://huggingface.co/spaces/parth-1/MetaGuard-Train) |
+| **Fine-tuned model** (GRPO checkpoint on Hub) | [parth-1/metaguard-policy-agent-v1](https://huggingface.co/parth-1/metaguard-policy-agent-v1) |
+| **Training notebook** (Colab — opens `grpo_train.ipynb` from this repo) | [Open in Colab](https://colab.research.google.com/github/Parth380/meta-ad-policy-sandbox/blob/main/grpo_train.ipynb) |
+| **Blog post** (narrative write-up — publish on HF, then swap URL) | [Draft in repo (`docs/metaguard-blog.md`)](https://github.com/Parth380/meta-ad-policy-sandbox/blob/main/docs/metaguard-blog.md) |
+
 
 ---
 
@@ -40,6 +53,10 @@ Single-shot LLM moderation is brittle in enterprise settings:
 Real compliance teams follow a **procedure**: check policy → inspect creative →
 verify the advertiser → log the audit → only then decide. MetaGuard makes the
 agent learn that procedure end-to-end.
+
+### Why it matters
+
+**Trust & safety and ads integrity teams**, **enterprise compliance**, and **anyone shipping LLM agents against real APIs** care because mistakes are costly: bad approvals create legal and user-harm risk; over-blocking hurts revenue. A benchmark that enforces **procedure, traceability, and recovery from flaky tools** is a better proxy for production than single-shot classification.
 
 ---
 
@@ -145,6 +162,33 @@ single-shot strategies provably under-perform a procedural agent.
 
 ---
 
+## Training & results
+
+Training uses **[OpenEnv](https://github.com/openenv-ai/openenv)** as the environment (this repo’s FastAPI hub + reward logic), **[Unsloth](https://github.com/unslothai/unsloth)** for fast LoRA fine-tuning, and **[Hugging Face TRL](https://github.com/huggingface/trl)** (`GRPOTrainer` / `GRPOConfig`) for GRPO. Entry point: `grpo_train.py`. The trained weights are on the Hub as **[parth-1/metaguard-policy-agent-v1](https://huggingface.co/parth-1/metaguard-policy-agent-v1)** (fine-tuned from `unsloth/Llama-3.1-8B-Instruct`). 
+
+### What changed after training? 
+
+After you complete a real run, summarize **before → after** in a few bullets and paste evidence below.
+
+- **Baseline (optional):** 
+Prior to the RLHF fine-tuning process, the base meta-llama/Meta-Llama-3.1-8B-Instruct model was largely incompatible with the strict constraints of the compliance environment. It recorded a Mean Initial Reward of -0.30, driven primarily by consistent API rejections and qualitative failure modes. These failures included frequent JSON formatting hallucinations—such as unclosed brackets—and a fundamental inability to follow the required phase order, often attempting to submit audits before querying regulations. The model’s inability to adhere to the required schema also resulted in frequent timeout errors during execution.
+- **After GRPO:** 
+Reward Stabilization: The model successfully moved from an initial negative mean reward (~ -0.5) to a consistent positive mean reward (~ 0.45).
+Comparison: Initial runs exhibited significant policy instability around step 80, evidenced by a 4\times increase in GRPO loss and a corresponding crash in mean return. Subsequent tuning  flattened these spikes, resulting in a more monotonic improvement in reward and fewer qualitative "relapses" into low-reward behavior.
+Violation Rate: Success rate stabilized after step 40, with the model consistently hitting the reward ceiling despite injected variability.
+- **Run metadata (optional):** 
+The training was conducted on an NVIDIA L4 (24GB VRAM) via Hugging Face Spaces using the unsloth/Llama-3.1-8B-Instruct base model, quantized to 4-bit and trained in bfloat16. The fine-tuning utilized a LoRA configuration with a Rank(r) of 32 and an alpha of 64, targeting all linear layers. Key hyperparameters in the GRPOConfig included a learning rate of 2*10^{-5} over 3 epochs, an effective batch size of 8 (via a per-device batch size of 1 and 8 gradient accumulation steps), and a max completion length of 128.
+
+### Loss and reward 
+
+![Training loss — ](docs/plots/training_loss.png)
+
+![Mean reward (or return) ](docs/plots/reward_curve.png)
+
+*If the images are not in the repo yet, add them under `docs/plots/` after training, or use absolute URLs to hosted assets.*
+
+---
+
 ## Quick Start
 
 ### 1. Install
@@ -177,9 +221,9 @@ python inference.py
 python demo.py
 ```
 
-### 5. (Optional) Train an agent with GRPO
-Requires a CUDA GPU. Trains a LoRA on top of `unsloth/Llama-3.1-8B-Instruct`
-using the env itself as the reward function.
+### 5. Train an agent (Unsloth + TRL GRPO)
+Requires a CUDA GPU. `grpo_train.py` fine-tunes a LoRA on `unsloth/Llama-3.1-8B-Instruct` with **Unsloth** and **TRL’s `GRPOTrainer`**, using this environment as the reward source. See [Training & results](#training--results) for plots and narrative after you train.
+
 ```bash
 python grpo_train.py
 ```
@@ -217,6 +261,7 @@ meta-ad-policy-sandbox/
 - **Theme:** 3.1 Professional Tasks — Multi-Step Reasoning & Policy Compliance
 - **Bonus Track:** Scaler AI Labs — Multi-App RL Environment for Enterprise Workflows
 - **Team:** Parth Singhal, Mehakveer Kaur, Kartik Goyal
+- **Checklist:** OpenEnv-based env, **Unsloth + TRL** training (`grpo_train.py`), **loss/reward plots** in [Training & results](#training--results), **HF Space + collateral** in [Quick links].
 
 ---
 
