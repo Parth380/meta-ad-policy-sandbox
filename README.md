@@ -1,14 +1,3 @@
----
-title: MetaGuard Ad Policy Sandbox
-emoji: 🛡
-colorFrom: blue
-colorTo: indigo
-sdk: docker
-app_port: 8000
-pinned: false
-license: mit
----
-
 # MetaGuard: A Multi-App RL Environment for Enterprise Ad Policy Compliance
 
 > An OpenEnv-compatible reinforcement learning environment that forces an LLM agent

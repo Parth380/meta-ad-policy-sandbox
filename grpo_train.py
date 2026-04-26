@@ -13,6 +13,16 @@ from trl import GRPOTrainer, GRPOConfig
 
 PatchFastRL("GRPO", FastLanguageModel)
 
+# #region agent log
+import pathlib as _pl
+_DLOG = _pl.Path("debug-851b5f.log")
+def _dlog(hyp, loc, msg, data=None):
+    import time as _t
+    entry = json.dumps({"sessionId":"851b5f","hypothesisId":hyp,"location":loc,"message":msg,"data":data or {},"timestamp":int(_t.time()*1000)})
+    with open(_DLOG, "a") as f: f.write(entry + "\n")
+    print(f"[DBG:{hyp}] {msg} {data or ''}", flush=True)
+# #endregion
+
 # =========================
 # CONFIG
 # =========================
@@ -37,7 +47,10 @@ ALLOWED_ACTIONS = [
 # =========================
 
 def ensure_env_ready():
-    for _ in range(20):
+    # #region agent log
+    _dlog("B", "grpo_train.py:ensure_env_ready", "Checking env", {"ENV_URL": ENV_URL})
+    # #endregion
+    for i in range(20):
         try:
             r = requests.post(
                 f"{ENV_URL}/reset",
@@ -45,11 +58,20 @@ def ensure_env_ready():
                 timeout=5
             )
             if r.status_code == 200:
+                # #region agent log
+                _dlog("B", "grpo_train.py:ensure_env_ready", "Env ready", {"attempt": i+1, "status": r.status_code})
+                # #endregion
                 print("✅ Environment ready")
                 return
-        except:
+        except Exception as e:
+            # #region agent log
+            if i == 0: _dlog("B", "grpo_train.py:ensure_env_ready", "Env connection failed", {"attempt": i+1, "error": str(e)[:200]})
+            # #endregion
             pass
         time.sleep(1)
+    # #region agent log
+    _dlog("B", "grpo_train.py:ensure_env_ready", "ENV UNREACHABLE after 20 attempts", {})
+    # #endregion
     raise RuntimeError("❌ ENV not reachable")
 
 # =========================
@@ -240,21 +262,39 @@ def build_dataset():
 # REWARD FUNCTION (FIXED)
 # =========================
 
-def reward_environment(prompts, completions, task_id=None, setup_actions=None, **kwargs):
-    """Shaped reward for GRPO.
+_reward_call_count = [0]
 
-    Pure env reward is too sparse (mostly -0.05) to give clear gradients.
-    We add explicit shaping:
-      - invalid JSON / invalid action_type -> -1.0  (strong negative signal)
-      - valid action env REJECTS (wrong phase / API failure) -> -0.5
-      - valid action env ACCEPTS (advances state) -> +0.5 + env_reward
-      - terminal correct decision -> env_reward already contains +1.0 bonus
-    """
+def reward_environment(prompts, completions, task_id=None, setup_actions=None, **kwargs):
+    """Shaped reward for GRPO."""
+    _reward_call_count[0] += 1
+    _call = _reward_call_count[0]
+    # #region agent log
+    _dlog("C", "grpo_train.py:reward_env", f"reward call #{_call}", {
+        "n_prompts": len(prompts) if prompts else 0,
+        "n_completions": len(completions) if completions else 0,
+        "completions_type": type(completions).__name__,
+        "first_completion_type": type(completions[0]).__name__ if completions else "N/A",
+        "first_completion_preview": str(completions[0])[:150] if completions else "N/A",
+        "task_id_is_none": task_id is None,
+        "setup_actions_is_none": setup_actions is None,
+        "kwargs_keys": list(kwargs.keys()),
+    })
+    # #endregion
+
     client = EnvClient(ENV_URL)
     rewards = []
 
-    for completion, t_id, setup in zip(completions, task_id, setup_actions):
+    if task_id is None or setup_actions is None:
+        # #region agent log
+        _dlog("D", "grpo_train.py:reward_env", "task_id or setup_actions is None — returning -1 for all", {"call": _call})
+        # #endregion
+        return [-1.0] * len(completions)
+
+    for idx, (completion, t_id, setup) in enumerate(zip(completions, task_id, setup_actions)):
         parsed = extract_json(completion)
+        # #region agent log
+        if _call <= 3: _dlog("D", "grpo_train.py:reward_loop", f"call#{_call} item#{idx}", {"parsed_ok": parsed is not None, "action": parsed.get("action_type") if parsed else None, "raw_preview": str(completion)[:120], "task_id": t_id})
+        # #endregion
         if not parsed:
             rewards.append(-1.0)
             continue
@@ -300,23 +340,39 @@ def reward_environment(prompts, completions, task_id=None, setup_actions=None, *
 # MODEL
 # =========================
 
-USE_4BIT = not torch.cuda.is_available() or torch.cuda.get_device_properties(0).total_memory < 40 * 1024**3
+if torch.cuda.is_available():
+    _props = torch.cuda.get_device_properties(0)
+    _vram = _props.total_memory
+    _name = _props.name
+    _cc = (_props.major, _props.minor)  # compute capability
+    print(f"GPU: {_name}  VRAM: {_vram / 1024**3:.1f} GB  Compute: {_cc[0]}.{_cc[1]}")
+else:
+    _vram = 0
+    _name = "CPU"
+    _cc = (0, 0)
+
+USE_4BIT = _vram < 40 * 1024**3   # T4 (15 GB), L4 (24 GB) → 4-bit; A100 (80 GB) → full
+USE_BF16 = _cc >= (8, 0) and not USE_4BIT  # bf16 only when full-precision; 4-bit LoRA uses fp16 internally
+
+# #region agent log
+_dlog("A", "grpo_train.py:gpu_detect", "GPU config resolved", {"name":_name,"vram_gb":round(_vram/1024**3,1),"cc":list(_cc),"USE_4BIT":USE_4BIT,"USE_BF16":USE_BF16})
+# #endregion
 
 model, tokenizer = FastLanguageModel.from_pretrained(
     model_name="unsloth/Llama-3.1-8B-Instruct",
     load_in_4bit=USE_4BIT,
     max_seq_length=2048,
-    dtype=None,  # auto-detect bf16 on A100
+    dtype=torch.float16 if USE_4BIT else None,
 )
 
 model = FastLanguageModel.get_peft_model(
     model,
-    r=32,
+    r=16 if USE_4BIT else 32,
     target_modules=[
         "q_proj", "k_proj", "v_proj", "o_proj",
         "gate_proj", "up_proj", "down_proj",
     ],
-    lora_alpha=64,
+    lora_alpha=32 if USE_4BIT else 64,
     lora_dropout=0,
     bias="none",
     use_gradient_checkpointing="unsloth",
@@ -329,21 +385,26 @@ model = FastLanguageModel.get_peft_model(
 
 dataset = build_dataset()
 
+# #region agent log
+_dlog("A", "grpo_train.py:trainer_init", "Creating GRPOTrainer", {"USE_4BIT":USE_4BIT,"USE_BF16":USE_BF16,"epochs":1 if USE_4BIT else 3,"batch":1 if USE_4BIT else 2,"gens":2 if USE_4BIT else 4,"dataset_len":len(dataset)})
+# #endregion
+
 trainer = GRPOTrainer(
     model=model,
     reward_funcs=[reward_environment],
     args=GRPOConfig(
         output_dir="outputs",
         learning_rate=2e-5,
-        num_train_epochs=3,
-        per_device_train_batch_size=2,
-        gradient_accumulation_steps=4,
-        num_generations=4,
+        num_train_epochs=1 if USE_4BIT else 3,
+        per_device_train_batch_size=1 if USE_4BIT else 2,
+        gradient_accumulation_steps=2 if USE_4BIT else 4,
+        num_generations=2 if USE_4BIT else 4,
         max_prompt_length=768,
         max_completion_length=128,
-        logging_steps=5,
-        warmup_ratio=0.1,
-        bf16=True,
+        logging_steps=3 if USE_4BIT else 5,
+        warmup_steps=5 if USE_4BIT else 10,
+        bf16=USE_BF16,
+        fp16=not USE_BF16,
         report_to="none",
     ),
     train_dataset=dataset,
@@ -357,6 +418,9 @@ trainer = GRPOTrainer(
 if __name__ == "__main__":
     ensure_env_ready()
 
+    # #region agent log
+    _dlog("E", "grpo_train.py:train_start", "About to call trainer.train()", {"gpu_mem_allocated_gb": round(torch.cuda.memory_allocated()/1024**3, 2) if torch.cuda.is_available() else 0})
+    # #endregion
     print("Starting GRPO training...")
     trainer.train()
 
