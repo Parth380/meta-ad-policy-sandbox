@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "meta-ad-policy-sandbox"
 version = "0.2.3"
 description = "Meta Ad-Policy RL Sandbox"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
     "fastapi",
     "uvicorn",
