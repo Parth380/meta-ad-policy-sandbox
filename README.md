@@ -16,7 +16,7 @@
 | **Hugging Face Space** (environment) | [huggingface.co/spaces/parth-1/MetaGuard](https://huggingface.co/spaces/parth-1/MetaGuard) |
 | **Hugging Face Space** (GRPO training) | [huggingface.co/spaces/parth-1/MetaGuard-Train](https://huggingface.co/spaces/parth-1/MetaGuard-Train) |
 | **Fine-tuned model** (GRPO checkpoint) | [parth-1/metaguard-policy-agent-v1](https://huggingface.co/parth-1/metaguard-policy-agent-v1) |
-| **Training notebook** | [Open in Colab](https://colab.research.google.com/github/Parth380/meta-ad-policy-sandbox/blob/main/grpo_train.ipynb) |
+| **Training Notebook (Kaggle T4)** | [Open in Kaggle](https://www.kaggle.com/code/parthsinghal121/kaggle-grpo-train-ipynb) |
 | **Blog post** | [Draft in repo (`docs/metaguard-blog.md`)](https://github.com/Parth380/meta-ad-policy-sandbox/blob/main/docs/metaguard-blog.md) |
 
 
