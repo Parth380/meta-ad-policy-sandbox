@@ -37,6 +37,34 @@ def log_end(success: bool, steps: int, score: float, rewards: list) -> None:
     print(f"[END] success={success_val} steps={steps} score={score:.3f} rewards={rewards_str}", flush=True)
 # ------------------------------
 
+def parse_attempt(text):
+    """Robust parser matching the README schema constraints."""
+    candidates = []
+    if "```" in text:
+        for p in text.split("```"):
+            p = p.strip().lstrip("json").strip()
+            candidates.append(p)
+    candidates.append(text.strip())
+    s, e = text.find("{"), text.rfind("}") + 1
+    if s != -1 and e > s:
+        candidates.append(text[s:e])
+        
+    for c in candidates:
+        try:
+            r = json.loads(c)
+            if isinstance(r, dict) and "action_type" in r:
+                r.setdefault("reasoning", "No reasoning provided.")
+                
+                valid_cat = {"HEALTHCARE", "FINANCIAL", "NONE", None}
+                if r.get("violation_category") not in valid_cat:
+                    r.pop("violation_category", None)
+                    
+                allowed = {"action_type", "reasoning", "violation_category", "metadata"}
+                return {k: v for k, v in r.items() if k in allowed}
+        except Exception:
+            continue
+    return None
+
 def get_llm_action(observation_data):
     """Asks the LLM what action to take based on the ad observation."""
     system_prompt = """You are an enterprise Ad Policy Compliance Agent.
@@ -78,24 +106,19 @@ def get_llm_action(observation_data):
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            # Removed response_format={"type": "json_object"} as HF router often rejects it
             temperature=0.1
         )
         
-        # Clean the response in case the LLM wrapped it in markdown code blocks like ```json ... ```
         content = response.choices[0].message.content.strip()
-        if content.startswith("```json"):
-            content = content[7:-3].strip()
-        elif content.startswith("```"):
-            content = content[3:-3].strip()
+        parsed_action = parse_attempt(content)
+        
+        if parsed_action:
+            return parsed_action
             
-        result = json.loads(content)
-        return {
-            "action_type": result.get("action_type", "query_regulations"),
-            "reasoning": result.get("reasoning", "Fallback reasoning")
-        }
+        return {"action_type": "query_regulations", "reasoning": "parse_failed"}
+
     except Exception as e:
-        print(f"\n[CRITICAL LLM ERROR]: {str(e)}\n", flush=True) # THIS WILL REVEAL THE BUG
+        print(f"\n[CRITICAL LLM ERROR]: {str(e)}\n", flush=True) 
         return {"action_type": "query_regulations", "reasoning": f"Error recovery: {str(e)}"}
 
 def main() -> None:
@@ -136,10 +159,12 @@ def main() -> None:
                 # Get action from LLM
                 action_payload = get_llm_action(llm_observation)
                 action_str = action_payload["action_type"]
+                
                 if "Error code: 402" in action_payload.get("reasoning", ""):
                     done = True
                     log_step(step=steps_taken, action=action_str, reward=0.0, done=True, error="API credits depleted")
                     break
+                    
                 # Execute action in environment
                 step_res = requests.post(f"{ENV_URL}/step", json={"action": action_payload})
                 step_data = step_res.json() 
