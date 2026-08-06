@@ -1,3 +1,5 @@
+# environment.py
+
 import requests
 from openenv.core.env_server import Environment
 from src.models import AdAction, AdObservation, AdState
@@ -246,6 +248,7 @@ class AdPolicyEnvironment(Environment):
         is_violation = self.current_ad.get("ground_truth", False)
         is_correct = (act_type == "reject" and is_violation) or \
                      (act_type == "approve" and not is_violation)
+        self.last_correct_decision = is_correct   # <-- add this line
 
         # Dominant signal
         reward += 1.0 if is_correct else -1.0
@@ -299,5 +302,6 @@ class AdPolicyEnvironment(Environment):
             policy_confidence=self.signals["policy_confidence"],
             image_flag=self.signals["image_flag"],
             landing_flag=self.signals["landing_flag"],
-            last_error=self.last_error
+            last_error=self.last_error,
+            correct_decision=getattr(self, "last_correct_decision", None)
         )

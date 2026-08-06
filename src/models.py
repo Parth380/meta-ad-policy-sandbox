@@ -18,6 +18,7 @@ class AdObservation(Observation):
     image_flag: Optional[bool] = None
     landing_flag: Optional[bool] = None
     last_error: Optional[str] = None
+    correct_decision: Optional[bool] = None
 
 class AdAction(Action):
     action_type: Literal[
